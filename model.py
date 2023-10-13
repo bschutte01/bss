@@ -4,8 +4,9 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 from pathlib import Path
+import os
 
-file_loc = 'C:/Users/brend/Documents/dev/oppd_bss'
+file_loc = os.path.dirname(os.path.realpath(__file__))
 file_name = 'nodal_input.xls'
 path_to_file = Path(file_loc)/file_name
 
@@ -53,6 +54,8 @@ try:
     #just generate some data randomly, need to get this from an input file
     P = df
 
+    # Model Params #
+    m.Params.MIPGap = 0.005
     #todo: pull these parameters from an input file for easier control
     #      create a function to handle these intializations
     #      need prices
@@ -98,18 +101,6 @@ try:
         name = 'state_of_charge'
     )
 
-    #max/min SoC for the battery at each time period
-    #m.addConstrs(
-    #    (SoC[t] <= soc_cap for t in range(t_horizon)),
-    #    name = 'max_state_of_charge'
-    #)
-
-    #m.addConstrs(
-    #    (SoC[t] >= soc_min for t in range(t_horizon)),
-    #    name = 'min state of charge'
-    #)
-    
-
     #only one full cycle per 24 hours
     for day in df.hour.unique():
         expr = gp.LinExpr()
@@ -118,7 +109,7 @@ try:
                 expr.addTerms(J['c'],state[t,'c'])
                 expr.addTerms(J['regd'],state[t,'regd'])
         m.addConstr(
-            expr <= soc_cap, #change to 1, can only charge 100% total in a day
+            expr <= 1, #change to 1, can only charge 100% total in a day
             name = 'day %d cycle limit' % day
         )
     
