@@ -1,18 +1,17 @@
 import gurobipy as gp
 from gurobipy import GRB
-import numpy as np
 import pandas as pd
-import scipy.sparse as sp
 from pathlib import Path
+import os
 
-file_loc = 'C:/Users/brend/Documents/dev/oppd_bss'
+file_loc = os.path.dirname(os.path.realpath(__file__))
 file_name = 'nodal_input.xls'
 path_to_file = Path(file_loc)/file_name
 
 df = pd.read_excel(path_to_file)
 #what to do about blank values?
 
-df['hour'] = df['date_time'].dt.hour
+df['day'] = df['date_time'].dt.day
 
 try:
     m = gp.Model('main')
@@ -24,10 +23,10 @@ try:
     # Time params #
     t_delta = 5 #length of a timeframe in minutes
     #days = 1 #num of days to consider
-    t_horizon = max(df.index)
+    t_horizon = max(df.index)+1
 
     #model_t_to_day = {[t for t in range(t_horizon)][i]:np.array([day for day in range(days)]).repeat(24 * 60/t_delta)[i] for i in range(t_horizon)}
-    model_t_to_day = {[t for t in list(df.index)][i]:df['hour'][i] for i in list(df.index)}
+    model_t_to_day = {[t for t in list(df.index)][i]:df['day'][i] for i in list(df.index)}
     #gives the corresponding day when given a model period t as the parameter
     #ex: model_t_to_day[7] to get the corresponding day of the 7th model period
 
@@ -48,11 +47,15 @@ try:
     cd = {states[i]:[0,1*rt_eff,-1,-1,-1,-1,1*rt_eff][i] for i in range(len(states))}    #control if state is charge or discharge
     TP_eff = {states[i]:[0,1,1,0.1,0,0.2,0.2][i] for i in range(len(states))}    #TP efficiency for each state
     J = {s:TP_eff[s]*cd[s]*(t_delta/duration) for s in states} #amount of energy added/removed for each state
+    #is 20% TP accurate for ancillary market rates? how sensitive is market participation to this TP?
+
 
     # Prices #
     #just generate some data randomly, need to get this from an input file
     P = df
 
+    # Model Params #
+    m.Params.MIPGap = 0.005
     #todo: pull these parameters from an input file for easier control
     #      create a function to handle these intializations
     #      need prices
@@ -98,18 +101,6 @@ try:
         name = 'state_of_charge'
     )
 
-    #max/min SoC for the battery at each time period
-    #m.addConstrs(
-    #    (SoC[t] <= soc_cap for t in range(t_horizon)),
-    #    name = 'max_state_of_charge'
-    #)
-
-    #m.addConstrs(
-    #    (SoC[t] >= soc_min for t in range(t_horizon)),
-    #    name = 'min state of charge'
-    #)
-    
-
     #only one full cycle per 24 hours
     for day in df.hour.unique():
         expr = gp.LinExpr()
@@ -118,27 +109,40 @@ try:
                 expr.addTerms(J['c'],state[t,'c'])
                 expr.addTerms(J['regd'],state[t,'regd'])
         m.addConstr(
-            expr <= soc_cap, #change to 1, can only charge 100% total in a day
+            expr <= 1, #change to 1, can only charge 100% total in a day
             name = 'day %d cycle limit' % day
         )
     
-    #exp1 = J['c']state[0,'c'] + J['regd'],state[0,'regd'] ... + J['c']state[286,'c'] + J['regd'],state[286,'regd'] <= 1
-    #exp2 = J['c']state[287,'c'] + J['regd'],state[0,'regd'] ... + J['c']state[286,'c'] + J['regd'],state[600,'regd'] <= 1
-
-
     #need to create for discharging as well
 
     m.write('out.lp')
     m.optimize()
 
-    for v in m.getVars():
-        if(abs(v.X)>0):
-            print('%s %g' % (v.VarName, v.X))
-
-    # graphical representation of the state of charge
-    # ggplot in python
+    #for v in m.getVars():
+    #    if(abs(v.X)>0):
+    #        print('%s %g' % (v.VarName, v.X))
 
 
+    final_SOC = []
+    final_state = []
+    final_price = []
+    for t in df.index:
+        final_SOC.append(SoC[t].X)
+        for s in states:
+            if state[t,s].X > 0.9:
+                final_state.append(s)
+                final_price.append(P[s][t])
+
+    
+    data = {
+        'date_time':df['date_time'],
+        'SoC':final_SOC,
+        'state':final_state,
+        'price': final_price
+    }
+    final_SOC_df = pd.DataFrame(data)
+    final_SOC_df.to_csv(Path(file_loc)/Path('output\\output.csv'),
+                        index = False)
 
 except gp.GurobiError as e:
     print('Error code ' + str(e.errno) + ": " + str(e))
