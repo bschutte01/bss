@@ -1,10 +1,7 @@
 import gurobipy as gp
 from gurobipy import GRB
-#import numpy as np
 import pandas as pd
-
 from pathlib import Path
-from plotnine import *
 import os
 
 file_loc = os.path.dirname(os.path.realpath(__file__))
@@ -14,7 +11,7 @@ path_to_file = Path(file_loc)/file_name
 df = pd.read_excel(path_to_file)
 #what to do about blank values?
 
-df['hour'] = df['date_time'].dt.hour
+df['day'] = df['date_time'].dt.day
 
 try:
     m = gp.Model('main')
@@ -29,7 +26,7 @@ try:
     t_horizon = max(df.index)+1
 
     #model_t_to_day = {[t for t in range(t_horizon)][i]:np.array([day for day in range(days)]).repeat(24 * 60/t_delta)[i] for i in range(t_horizon)}
-    model_t_to_day = {[t for t in list(df.index)][i]:df['hour'][i] for i in list(df.index)}
+    model_t_to_day = {[t for t in list(df.index)][i]:df['day'][i] for i in list(df.index)}
     #gives the corresponding day when given a model period t as the parameter
     #ex: model_t_to_day[7] to get the corresponding day of the 7th model period
 
