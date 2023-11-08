@@ -1,6 +1,7 @@
 import gurobipy as gp
 from gurobipy import GRB
 import pandas as pd
+import numpy as np
 from pathlib import Path
 import os
 
@@ -11,7 +12,8 @@ path_to_file = Path(file_loc)/file_name
 df = pd.read_excel(path_to_file)
 #what to do about blank values?
 
-df['day'] = df['date_time'].dt.day
+df['day'] = df['date_time'].dt.date
+df['hour'] = df['date_time'].dt.hour
 
 try:
     m = gp.Model('main')
@@ -41,25 +43,31 @@ try:
     ### in order they are idle, charge, discharge, spinning reserve,
     ### supplemental reserve, regulation up, regulation down
     states = ['i','c','d','spinr','supr','regu','regd']
+    DA_states = ['DAi','DAc','DAd','DAspinr','DAsupr','DAregu','DAregd']
 
     # Charging params #
     init_SOC = .25      #state of charge prior to running model
     cd = {states[i]:[0,1*rt_eff,-1,-1,-1,-1,1*rt_eff][i] for i in range(len(states))}    #control if state is charge or discharge
     TP_eff = {states[i]:[0,1,1,0.1,0,0.2,0.2][i] for i in range(len(states))}    #TP efficiency for each state
-    J = {s:TP_eff[s]*cd[s]*(t_delta/duration) for s in states} #amount of energy added/removed for each state
+    J = {s:TP_eff[s]*cd[s]*(t_delta/duration) for s in states}
+    DAJ = {f'DA{k}': v for k,v in J.items()} #amount of energy added/removed for each state
+
     #is 20% TP accurate for ancillary market rates? how sensitive is market participation to this TP?
 
 
     # Prices #
     #just generate some data randomly, need to get this from an input file
     P = df
+    DAP = pd.DataFrame(np.random.normal(loc = 1.0, scale =15,
+                                        size = (df.shape[0],len(DA_states))),
+                                        columns=DA_states)
+    P = pd.concat([P,DAP], axis = 1)
+
 
     # Model Params #
     m.Params.MIPGap = 0.005
     #todo: pull these parameters from an input file for easier control
     #      create a function to handle these intializations
-    #      need prices
-    
     
     ##########################
     ### Decision Variables ###
@@ -69,6 +77,8 @@ try:
     # state[1,'c'] = 0/1
     # states = ['i','c','d','spinr','supr','regu','regd']
 
+    DA_state = m.addVars(t_horizon,DA_states ,vtype=GRB.BINARY,name = 'DA_state')
+
     SoC = m.addVars(t_horizon, vtype = GRB.CONTINUOUS, name = 'SoC',
                     lb = soc_min,
                     ub = soc_cap)
@@ -76,7 +86,8 @@ try:
     ##########################
     ### Objective Function ###
     ##########################
-    m.setObjective(gp.quicksum(P[j][i]*state[i,j] for i in range(t_horizon) for j in states), 
+    m.setObjective(gp.quicksum(P[j][i]*state[i,j] for i in range(t_horizon) for j in states)
+                   + gp.quicksum(P[j][i]*DA_state[i,j] for i in range(t_horizon) for j in DA_states), 
                    GRB.MAXIMIZE)
 
     ##########################
@@ -85,34 +96,75 @@ try:
 
     # battery can only be in 1 state in a given timeframe
     m.addConstrs(
-        (state.sum(t,'*') == 1 for t in range(t_horizon)), 
+        (state.sum(t,'*') + DA_state.sum(t,'*') == 1 for t in range(t_horizon)), 
         name = 'single_assignment'
     )
 
     #intial state of charge
     m.addConstr(
-        SoC[0] == init_SOC + (gp.quicksum(J[k]*state[0,k] for k in states)),
+        SoC[0] == init_SOC + (gp.quicksum(J[k]*state[0,k] for k in states)
+                              +gp.quicksum(DAJ[k]*DA_state[0,k] for k in DA_states)),
         name = 'initial_state_of_charge'
     )
 
     #state of charge in time t is the state of charge in the previous time period + charge added/subtracted by state in time 
     m.addConstrs(
-        (SoC[t] == SoC[t-1] + gp.quicksum(J[k]*state[t,k] for k in states) for t in range(1,t_horizon)),
+        (SoC[t] == SoC[t-1] + gp.quicksum(J[k]*state[t,k] for k in states)
+         + gp.quicksum(DAJ[k]*DA_state[t,k] for k in DA_states) for t in range(1,t_horizon)
+         ),
         name = 'state_of_charge'
     )
 
     #only one full cycle per 24 hours
-    for day in df.hour.unique():
-        expr = gp.LinExpr()
+    for day in df.day.unique():
+        expr_charge = gp.LinExpr()
+        expr_discharge = gp.LinExpr()
+
         for t in range(t_horizon):
             if model_t_to_day[t] == day:
-                expr.addTerms(J['c'],state[t,'c'])
-                expr.addTerms(J['regd'],state[t,'regd'])
+                expr_charge.addTerms(J['c'],state[t,'c'])
+                expr_charge.addTerms(J['regd'],state[t,'regd'])
+                expr_charge.addTerms(DAJ['DAc'],DA_state[t,'DAc'])
+                expr_charge.addTerms(DAJ['DAregd'],DA_state[t,'DAregd'])
+
+                expr_discharge.addTerms(J['d'],state[t,'d'])
+                expr_discharge.addTerms(J['spinr'],state[t,'spinr'])
+                expr_discharge.addTerms(J['supr'],state[t,'supr'])
+                expr_discharge.addTerms(J['regu'],state[t,'regu'])
+                expr_discharge.addTerms(DAJ['DAd'],DA_state[t,'DAd'])
+                expr_discharge.addTerms(DAJ['DAspinr'],DA_state[t,'DAspinr'])
+                expr_discharge.addTerms(DAJ['DAsupr'],DA_state[t,'DAsupr'])
+                expr_discharge.addTerms(DAJ['DAregu'],DA_state[t,'DAregu'])
+
+
         m.addConstr(
-            expr <= 1, #change to 1, can only charge 100% total in a day
-            name = 'day %d cycle limit' % day
+            expr_charge <= 1,
+            name = 'day %s charge cycle limit' % day
         )
+
+        m.addConstr(
+            expr_discharge >= -1,
+            name = 'day %s discharge cycle limit' % day
+        )
+
+        #add day ahead states to cycle limit
+        #150% potential in the future, depends on evaluation period. 150% might depend on how much time were solving for
     
+    #if we participate in the day ahead, we must participate in the full hour
+    for day in df.day.unique():
+        for hour in df.hour.unique():
+            expr = gp.LinExpr()
+            temp = df.index[(df['hour']==hour) & (df['day'] == day)]
+            #print(temp)
+            #print(len(temp))
+            if(len(temp)>1):
+                m.addConstrs(
+                    (
+                    gp.quicksum(DA_state[t,k] for t in temp[1:]) == (len(temp)-1)*DA_state[temp[0],k]
+                            for k in DA_states),
+                            name = 'commit_hour'
+                )
+
     #need to create for discharging as well
 
     m.write('out.lp')
@@ -130,6 +182,10 @@ try:
         final_SOC.append(SoC[t].X)
         for s in states:
             if state[t,s].X > 0.9:
+                final_state.append(s)
+                final_price.append(P[s][t])
+        for s in DA_states:
+            if DA_state[t,s].X > 0.9:
                 final_state.append(s)
                 final_price.append(P[s][t])
 
