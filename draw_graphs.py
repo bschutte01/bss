@@ -3,9 +3,16 @@ from pathlib import Path
 from plotnine import *
 import os
 
+run_id = '20231114114142'
 file_loc = os.path.dirname(os.path.realpath(__file__))/Path('output')
-file_name = 'output.csv'
+file_name = run_id + '_output.csv'
 path_to_file = Path(file_loc)/Path(file_name)
+
+output_folder = file_loc/Path(run_id +'_graphs')
+print(output_folder)
+print(os.path.exists(output_folder))
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
 
 dat = pd.read_csv(path_to_file,
                   dtype={
@@ -26,10 +33,8 @@ def repDA(x):
     if x[:2] == 'DA':
         return x[2:]
 
-print(dat.dtypes)
 dat['isDA'] = dat['product'].apply(checkDA)
 dat['product'] = dat['product'].str.replace('DA','')
-print(dat.describe())
 #Graph 1: plotting the state of charge over time, coloring by what product the battery was in
 p1 = (
     ggplot(dat,aes(x = 'date_time', y = 'SoC',color = 'product'))
@@ -37,7 +42,7 @@ p1 = (
     + theme(axis_text_x = element_text(angle = 45, vjust = 1, hjust = 1),
             figure_size=(16,8))
 )
-p1.save(file_loc/Path('graphs\\charge_over_time.png'))
+p1.save(output_folder/Path('charge_over_time.png'))
 
 #Graph 1.2: plotting whether the model chose to participate in the DA market
 p1_2 = (
@@ -46,7 +51,7 @@ p1_2 = (
     + theme(axis_text_x = element_text(angle = 45, vjust = 1, hjust = 1),
             figure_size=(16,8))
 )
-p1_2.save(file_loc/Path('graphs\\DA_participation.png'))
+p1_2.save(output_folder/Path('DA_participation.png'))
 
 #Graph 2: proportion of time spent in each product
 product_list = dat['product'].value_counts().index.to_list()
@@ -57,7 +62,7 @@ p2 = (
     ggplot(dat, aes(x = product_cat))+
     geom_bar()
 )
-p2.save(file_loc/Path('graphs\\product_proportions.png'))
+p2.save(output_folder/Path('product_proportions.png'))
 
 #Graph 3: Cumulative sum of prices over time
 price_cumsum = dat['price'].cumsum(axis = 0).to_list()
@@ -70,7 +75,7 @@ p3 = (
             figure_size=(16,8))
 )
 
-p3.save(file_loc/Path('graphs\\cumulative_profit.png'))
+p3.save(output_folder/Path('cumulative_profit.png'))
 
 #Graph 4: revenue by product
 product_revs = dat[['product','price']].groupby(['product']).sum(['price'])#.sort_values(by = 'price')
@@ -79,7 +84,7 @@ p4 = (
     ggplot(dat, aes(x = 'reorder(product,price)', y = 'price'))
     +geom_col()
 )
-p4.save(file_loc/Path('graphs\\rev_by_product.png'))
+p4.save(output_folder/Path('rev_by_product.png'))
 
 p5 = (
     ggplot(dat,aes(x = 'date_time', y = 'price',color = 'product'))
@@ -87,4 +92,4 @@ p5 = (
     + theme(axis_text_x = element_text(angle = 45, vjust = 1, hjust = 1),
             figure_size=(16,8))
 )
-p5.save(file_loc/Path('graphs\\price_over_time.png'))
+p5.save(output_folder/Path('price_over_time.png'))

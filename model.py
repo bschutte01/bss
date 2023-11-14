@@ -4,10 +4,14 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import os
+import datetime
 
 file_loc = os.path.dirname(os.path.realpath(__file__))
 file_name = 'nodal_input.xls'
 path_to_file = Path(file_loc)/file_name
+
+temp = datetime.datetime.now()
+run_id = temp.strftime('%Y%m%d%H%M%S')
 
 df = pd.read_excel(path_to_file)
 
@@ -22,7 +26,7 @@ try:
     ##########################
 
     # Time params #
-    t_delta = 5 #length of a timeframe in minutes
+    t_delta = 60 #length of a timeframe in minutes
     #days = 1 #num of days to consider
     t_horizon = max(df.index)+1
 
@@ -47,7 +51,7 @@ try:
     # Charging params #
     init_SOC = .25      #state of charge prior to running model
     cd = {products[i]:[0,1*rt_eff,-1,-1,-1,-1,1*rt_eff][i] for i in range(len(products))}    #control if product is charge or discharge
-    TP_eff = {products[i]:[0,1,1,0.1,0,0.2,0.2][i] for i in range(len(products))}    #TP efficiency for each product
+    TP_eff = {products[i]:[0,1,1,0.1,0.1,0.2,0.2][i] for i in range(len(products))}    #TP efficiency for each product
     J = {s:TP_eff[s]*cd[s]*(t_delta/duration) for s in products}
     DAJ = {f'DA{k}': v for k,v in J.items()} #amount of energy added/removed for each product
 
@@ -56,9 +60,12 @@ try:
 
     # Prices #
     #just generate some data randomly, need to get this from an input file
-    P = df
+    avgs = df.groupby(['day','hour'], as_index = False)[['i','c','d','spinr','supr','regu','regd']].aggregate('sum')
+    avgs['date_time'] = pd.to_datetime(avgs.day) + avgs['hour'].apply(lambda x: pd.Timedelta(x,'hour'))
+    t_horizon = max(avgs.index)+1
+    P = avgs
     DAP = pd.DataFrame(np.random.normal(loc = 1.0, scale =15,
-                                        size = (df.shape[0],len(DA_products))),
+                                        size = (avgs.shape[0],len(DA_products))),
                                         columns=DA_products)
     P = pd.concat([P,DAP], axis = 1)
 
@@ -82,9 +89,11 @@ try:
                     lb = soc_min,
                     ub = soc_cap)
 
+
     ##########################
     ### Objective Function ###
     ##########################
+    
     m.setObjective(gp.quicksum(P[j][i]*product[i,j] for i in range(t_horizon) for j in products)
                    + gp.quicksum(P[j][i]*DA_product[i,j] for i in range(t_horizon) for j in DA_products), 
                    GRB.MAXIMIZE)
@@ -150,23 +159,23 @@ try:
         #150% potential in the future, depends on evaluation period. 150% might depend on how much time were solving for
     
     #if we participate in the day ahead, we must participate in the full hour
-    for day in df.day.unique():
-        for hour in df.hour.unique():
-            expr = gp.LinExpr()
-            temp = df.index[(df['hour']==hour) & (df['day'] == day)]
-            #print(temp)
-            #print(len(temp))
-            if(len(temp)>1):
-                m.addConstrs(
-                    (
-                    gp.quicksum(DA_product[t,k] for t in temp[1:]) == (len(temp)-1)*DA_product[temp[0],k]
-                            for k in DA_products),
-                            name = 'commit_hour'
-                )
+    #for day in df.day.unique():
+    #    for hour in df.hour.unique():
+    #        expr = gp.LinExpr()
+    #        temp = df.index[(df['hour']==hour) & (df['day'] == day)]
+    #        #print(temp)
+    #        #print(len(temp))
+    #        if(len(temp)>1):
+    #            m.addConstrs(
+    #                (
+    #                gp.quicksum(DA_product[t,k] for t in temp[1:]) == (len(temp)-1)*DA_product[temp[0],k]
+    #                        for k in DA_products),
+    #                        name = 'commit_hour'
+    #            )
 
     #need to create for discharging as well
 
-    m.write('out.lp')
+    m.write(run_id + '_out.lp')
     m.optimize()
 
     #for v in m.getVars():
@@ -177,7 +186,7 @@ try:
     final_SOC = []
     final_product = []
     final_price = []
-    for t in df.index:
+    for t in avgs.index:
         final_SOC.append(SoC[t].X)
         for s in products:
             if product[t,s].X > 0.9:
@@ -190,13 +199,13 @@ try:
 
     
     data = {
-        'date_time':df['date_time'],
+        'date_time':avgs['date_time'],
         'SoC':final_SOC,
         'product':final_product,
         'price': final_price
     }
     final_SOC_df = pd.DataFrame(data)
-    final_SOC_df.to_csv(Path(file_loc)/Path('output\\output.csv'),
+    final_SOC_df.to_csv(Path(file_loc)/Path('output\\'+ run_id +'_output.csv'),
                         index = False)
 
 except gp.GurobiError as e:
