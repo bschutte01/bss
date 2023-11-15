@@ -61,6 +61,7 @@ try:
     # Prices #
     #just generate some data randomly, need to get this from an input file
     P = df
+    np.random.seed(2023)
     DAP = pd.DataFrame(np.random.normal(loc = 1.0, scale =15,
                                         size = (df.shape[0],len(DA_products))),
                                         columns=DA_products)
