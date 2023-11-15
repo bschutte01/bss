@@ -4,10 +4,14 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import os
+import datetime
 
 file_loc = os.path.dirname(os.path.realpath(__file__))
 file_name = 'nodal_input.xls'
 path_to_file = Path(file_loc)/file_name
+
+temp = datetime.datetime.now()
+run_id = temp.strftime('%Y%m%d%H%M%S')
 
 df = pd.read_excel(path_to_file)
 
@@ -47,7 +51,7 @@ try:
     # Charging params #
     init_SOC = .25      #state of charge prior to running model
     cd = {products[i]:[0,1*rt_eff,-1,-1,-1,-1,1*rt_eff][i] for i in range(len(products))}    #control if product is charge or discharge
-    TP_eff = {products[i]:[0,1,1,0.1,0,0.2,0.2][i] for i in range(len(products))}    #TP efficiency for each product
+    TP_eff = {products[i]:[0,1,1,0.1,0.1,0.2,0.2][i] for i in range(len(products))}    #TP efficiency for each product
     J = {s:TP_eff[s]*cd[s]*(t_delta/duration) for s in products}
     DAJ = {f'DA{k}': v for k,v in J.items()} #amount of energy added/removed for each product
 
@@ -166,7 +170,7 @@ try:
 
     #need to create for discharging as well
 
-    m.write('out.lp')
+    m.write(run_id + '_out.lp')
     m.optimize()
 
     #for v in m.getVars():
@@ -196,7 +200,7 @@ try:
         'price': final_price
     }
     final_SOC_df = pd.DataFrame(data)
-    final_SOC_df.to_csv(Path(file_loc)/Path('output\\output.csv'),
+    final_SOC_df.to_csv(Path(file_loc)/Path('output\\'+ run_id +'_output.csv'),
                         index = False)
 
 except gp.GurobiError as e:
