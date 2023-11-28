@@ -79,6 +79,8 @@ try:
 
     # Model Params #
     m.Params.MIPGap = 0.005
+    m.Params.NodefileStart = 0.10
+    m.params.Threads = 6
     #todo: pull these parameters from an input file for easier control
     #      create a function to handle these intializations
     
@@ -222,6 +224,21 @@ try:
 
 except gp.GurobiError as e:
     print('Error code ' + str(e.errno) + ": " + str(e))
+    if e.errno == 10001 and m.Status == 13:
+        print('outputting best found result')
+        final_SOC = []
+        final_product = []
+        final_price = []
+        for t in df.index:
+            final_SOC.append(SoC[t].X)
+            for s in products:
+                if product[t,s].X > 0.9:
+                    final_product.append(s)
+                    final_price.append(P[s][t])
+            for s in DA_products:
+                if DA_product[t,s].X > 0.9:
+                    final_product.append(s)
+                    final_price.append(P[s][t])
 
 except AttributeError:
     print('Encountered an attribute error')
