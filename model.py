@@ -61,8 +61,8 @@ for month in orig_df['month'].unique():
 
 
         # Battery params #
-        soc_cap = .95    #max battery charge
-        soc_min = .2    #min batter charge
+        soc_cap = 1    #max battery charge
+        soc_min = 0    #min batter charge
         rt_eff = .85    #round trip efficiency, todo: break this down into components based on Nathan's input
         duration = 360    #duration of battery in minutes, inputs will be in 1,2,4,6,8 hours
 
@@ -123,8 +123,8 @@ for month in orig_df['month'].unique():
         ### Objective Function ###
         ##########################
         print('setting objective function')
-        m.setObjective(gp.quicksum(P[j][i]*cd2[j]*charge_amt[i,j] for i in range(t_horizon) for j in products)
-                    + gp.quicksum(P[j][i]*cd3[j]*DA_charge_amt[i,j] for i in range(t_horizon) for j in DA_products), 
+        m.setObjective(gp.quicksum(P[j][i]*charge_amt[i,j] for i in range(t_horizon) for j in products)
+                    + gp.quicksum(P[j][i]*DA_charge_amt[i,j] for i in range(t_horizon) for j in DA_products), 
                     GRB.MAXIMIZE)
 
         ##########################
