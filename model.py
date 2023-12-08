@@ -7,7 +7,7 @@ import os
 import datetime
 
 file_loc = os.path.dirname(os.path.realpath(__file__))
-file_name = 'nodal_input.xls'
+file_name = '2022_nodal_input.xlsx'
 path_to_file = Path(file_loc)/file_name
 
 temp = datetime.datetime.now()
@@ -31,7 +31,7 @@ try:
     t_horizon = max(df.index)+1
 
     #model_t_to_day = {[t for t in range(t_horizon)][i]:np.array([day for day in range(days)]).repeat(24 * 60/t_delta)[i] for i in range(t_horizon)}
-    model_t_to_day = {[t for t in list(df.index)][i]:df['day'][i] for i in list(df.index)}
+    model_t_to_day = df['day']
     #gives the corresponding day when given a model period t as the parameter
     #ex: model_t_to_day[7] to get the corresponding day of the 7th model period
 
@@ -45,12 +45,14 @@ try:
     #products the battery can be in
     ### in order they are idle, charge, discharge, spinning reserve,
     ### supplemental reserve, regulation up, regulation down
-    products = ['i','c','d','spinr','supr','regu','regd']
-    DA_products = ['DAi','DAc','DAd','DAspinr','DAsupr','DAregu','DAregd']
+    products = ['i','c','d','spinr','suppr','regu','regd']
+    DA_products = ['DAi','DAc','DAd','DAspinr','DAsuppr','DAregu','DAregd']
 
     # Charging params #
     init_SOC = .25      #state of charge prior to running model
-    cd = {products[i]:[0,1*rt_eff,-1,-1,-1,-1,1*rt_eff][i] for i in range(len(products))}    #control if product is charge or discharge
+    cd = {products[i]:[0,1*rt_eff,-1,-1,-1,-1,1*rt_eff][i] for i in range(len(products))}  
+    cd2 = {products[i]:[0,1,-1,-1,-1,-1,1][i] for i in range(len(products))}   #control if product is charge or discharge
+    cd3 = {DA_products[i]:[0,1,-1,-1,-1,-1,1][i] for i in range(len(products))} 
     TP_eff = {products[i]:[0,1,1,0.1,0.1,0.2,0.2][i] for i in range(len(products))}    #TP efficiency for each product
     J = {s:TP_eff[s]*cd[s]*(t_delta/duration) for s in products}
     DAJ = {f'DA{k}': v for k,v in J.items()} #amount of energy added/removed for each product
@@ -60,14 +62,16 @@ try:
 
     # Prices #
     #just generate some data randomly, need to get this from an input file
-    avgs = df.groupby(['day','hour'], as_index = False)[['i','c','d','spinr','supr','regu','regd']].aggregate('sum')
+    avgs = df.groupby(['day','hour'], as_index = False)[['i','c','d','spinr','suppr','regu','regd','DAi','DAc','DAd','DAspinr','DAsuppr','DAregu','DAregd']].aggregate('sum')
     avgs['date_time'] = pd.to_datetime(avgs.day) + avgs['hour'].apply(lambda x: pd.Timedelta(x,'hour'))
     t_horizon = max(avgs.index)+1
     P = avgs
-    DAP = pd.DataFrame(np.random.normal(loc = 1.0, scale =15,
-                                        size = (avgs.shape[0],len(DA_products))),
-                                        columns=DA_products)
-    P = pd.concat([P,DAP], axis = 1)
+    print(P.head)
+    #DAP = pd.DataFrame(np.random.normal(loc = 1.0, scale =15,
+    #                                    size = (avgs.shape[0],len(DA_products))),
+    #                                    columns=DA_products)
+    
+    #P = pd.concat([P,DAP], axis = 1)
 
 
     # Model Params #
@@ -81,7 +85,7 @@ try:
 
     product = m.addVars(t_horizon,products ,vtype=GRB.BINARY,name = 'product')
     # product[1,'c'] = 0/1
-    # products = ['i','c','d','spinr','supr','regu','regd']
+    # products = ['i','c','d','spinr','suppr','regu','regd']
 
     DA_product = m.addVars(t_horizon,DA_products ,vtype=GRB.BINARY,name = 'DA_product')
 
@@ -89,13 +93,15 @@ try:
                     lb = soc_min,
                     ub = soc_cap)
 
+    charge_amt = m.addVars(t_horizon,products ,vtype=GRB.CONTINUOUS,name = 'charge_amt')
+    DA_charge_amt = m.addVars(t_horizon,DA_products ,vtype=GRB.CONTINUOUS,name = 'DA_charge_amt')
 
     ##########################
     ### Objective Function ###
     ##########################
     
-    m.setObjective(gp.quicksum(P[j][i]*product[i,j] for i in range(t_horizon) for j in products)
-                   + gp.quicksum(P[j][i]*DA_product[i,j] for i in range(t_horizon) for j in DA_products), 
+    m.setObjective(gp.quicksum(P[j][i]*charge_amt[i,j] for i in range(t_horizon) for j in products)
+                   + gp.quicksum(P[j][i]*DA_charge_amt[i,j] for i in range(t_horizon) for j in DA_products), 
                    GRB.MAXIMIZE)
 
     ##########################
@@ -107,19 +113,27 @@ try:
         (product.sum(t,'*') + DA_product.sum(t,'*') == 1 for t in range(t_horizon)), 
         name = 'single_assignment'
     )
-
-    #intial state of charge
+    print('...charging only when product is active')
+    m.addConstrs(
+        (charge_amt[i,j] <= cd2[j]*J[j]*product[i,j] for i in range(t_horizon) for j in products),
+        name = 'charge_when_product_up'
+    )
+    
+    m.addConstrs(
+        (DA_charge_amt[i,j] <= cd3[j]*DAJ[j]*DA_product[i,j] for i in range(t_horizon) for j in DA_products),
+        name = 'DA_charge_when_product_up'
+    )
     m.addConstr(
-        SoC[0] == init_SOC + (gp.quicksum(J[k]*product[0,k] for k in products)
-                              +gp.quicksum(DAJ[k]*DA_product[0,k] for k in DA_products)),
+        SoC[0] == init_SOC + (gp.quicksum(cd2[k]*charge_amt[0,k] for k in products)
+                            +gp.quicksum(cd3[k]*DA_charge_amt[0,k] for k in DA_products)),
         name = 'initial_state_of_charge'
     )
-
     #state of charge in time t is the state of charge in the previous time period + charge added/subtracted by product in time 
+    print('...state_of_charge')
     m.addConstrs(
-        (SoC[t] == SoC[t-1] + gp.quicksum(J[k]*product[t,k] for k in products)
-         + gp.quicksum(DAJ[k]*DA_product[t,k] for k in DA_products) for t in range(1,t_horizon)
-         ),
+        (SoC[t] == SoC[t-1] + gp.quicksum(cd2[k]*charge_amt[t,k] for k in products)
+        + gp.quicksum(cd3[k]*DA_charge_amt[t,k] for k in DA_products) for t in range(1,t_horizon)
+        ),
         name = 'state_of_charge'
     )
 
@@ -130,19 +144,19 @@ try:
 
         for t in range(t_horizon):
             if model_t_to_day[t] == day:
-                expr_charge.addTerms(J['c'],product[t,'c'])
-                expr_charge.addTerms(J['regd'],product[t,'regd'])
-                expr_charge.addTerms(DAJ['DAc'],DA_product[t,'DAc'])
-                expr_charge.addTerms(DAJ['DAregd'],DA_product[t,'DAregd'])
+                expr_charge.addTerms(cd2['c'],charge_amt[t,'c'])
+                expr_charge.addTerms(cd2['regd'],charge_amt[t,'regd'])
+                expr_charge.addTerms(cd3['DAc'],DA_charge_amt[t,'DAc'])
+                expr_charge.addTerms(cd3['DAregd'],DA_charge_amt[t,'DAregd'])
 
-                expr_discharge.addTerms(J['d'],product[t,'d'])
-                expr_discharge.addTerms(J['spinr'],product[t,'spinr'])
-                expr_discharge.addTerms(J['supr'],product[t,'supr'])
-                expr_discharge.addTerms(J['regu'],product[t,'regu'])
-                expr_discharge.addTerms(DAJ['DAd'],DA_product[t,'DAd'])
-                expr_discharge.addTerms(DAJ['DAspinr'],DA_product[t,'DAspinr'])
-                expr_discharge.addTerms(DAJ['DAsupr'],DA_product[t,'DAsupr'])
-                expr_discharge.addTerms(DAJ['DAregu'],DA_product[t,'DAregu'])
+                expr_discharge.addTerms(cd2['d'],charge_amt[t,'d'])
+                expr_discharge.addTerms(cd2['spinr'],charge_amt[t,'spinr'])
+                expr_discharge.addTerms(cd2['suppr'],charge_amt[t,'suppr'])
+                expr_discharge.addTerms(cd2['regu'],charge_amt[t,'regu'])
+                expr_discharge.addTerms(cd3['DAd'],DA_charge_amt[t,'DAd'])
+                expr_discharge.addTerms(cd3['DAspinr'],DA_charge_amt[t,'DAspinr'])
+                expr_discharge.addTerms(cd3['DAsuppr'],DA_charge_amt[t,'DAsuppr'])
+                expr_discharge.addTerms(cd3['DAregu'],DA_charge_amt[t,'DAregu'])
 
 
         m.addConstr(
@@ -186,23 +200,27 @@ try:
     final_SOC = []
     final_product = []
     final_price = []
+    final_charge_amt = []
     for t in avgs.index:
         final_SOC.append(SoC[t].X)
         for s in products:
             if product[t,s].X > 0.9:
                 final_product.append(s)
                 final_price.append(P[s][t])
+                final_charge_amt.append(cd2[s]*charge_amt[t,s].X)
         for s in DA_products:
             if DA_product[t,s].X > 0.9:
                 final_product.append(s)
                 final_price.append(P[s][t])
+                final_charge_amt.append(cd3[s]*DA_charge_amt[t,s].X)
 
     
     data = {
         'date_time':avgs['date_time'],
         'SoC':final_SOC,
         'product':final_product,
-        'price': final_price
+        'price': final_price,
+        'charge_amt':final_charge_amt
     }
     final_SOC_df = pd.DataFrame(data)
     final_SOC_df.to_csv(Path(file_loc)/Path('output\\'+ run_id +'_output.csv'),
