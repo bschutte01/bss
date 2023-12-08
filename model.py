@@ -37,8 +37,8 @@ try:
 
 
     # Battery params #
-    soc_cap = .95    #max battery charge
-    soc_min = .2    #min batter charge
+    soc_cap = 1   #max battery charge
+    soc_min = 0    #min batter charge
     rt_eff = .85    #round trip efficiency, todo: break this down into components based on Nathan's input
     duration = 360    #duration of battery in minutes, inputs will be in 1,2,4,6,8 hours
 
