@@ -66,7 +66,15 @@ try:
     avgs['date_time'] = pd.to_datetime(avgs.day) + avgs['hour'].apply(lambda x: pd.Timedelta(x,'hour'))
     t_horizon = max(avgs.index)+1
     P = avgs
+    obj_P = P
+    for p in products[1:]:
+        for t in range(t_horizon):
+            obj_P.loc[t,p] = obj_P[p][t]/J[p]
+    for p in DA_products[1:]:
+        for t in range(t_horizon):
+            obj_P.loc[t,p] = obj_P[p][t]/DAJ[p]
     print(P.head)
+    print(obj_P.head)
     #DAP = pd.DataFrame(np.random.normal(loc = 1.0, scale =15,
     #                                    size = (avgs.shape[0],len(DA_products))),
     #                                    columns=DA_products)
@@ -100,8 +108,8 @@ try:
     ### Objective Function ###
     ##########################
     
-    m.setObjective(gp.quicksum(P[j][i]*charge_amt[i,j] for i in range(t_horizon) for j in products)
-                   + gp.quicksum(P[j][i]*DA_charge_amt[i,j] for i in range(t_horizon) for j in DA_products), 
+    m.setObjective(gp.quicksum(obj_P[j][i]*charge_amt[i,j] for i in range(t_horizon) for j in products)
+                   + gp.quicksum(obj_P[j][i]*DA_charge_amt[i,j] for i in range(t_horizon) for j in DA_products), 
                    GRB.MAXIMIZE)
 
     ##########################
