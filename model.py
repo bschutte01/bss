@@ -87,7 +87,13 @@ for month in orig_df['month'].unique():
         # Prices #
         #just generate some data randomly, need to get this from an input file
         P = df
-        
+        obj_P = P
+        for p in products[1:]:
+            for t in range(t_horizon):
+                obj_P.loc[t,p] = obj_P[p][t]/J[p]
+        for p in DA_products[1:]:
+            for t in range(t_horizon):
+                obj_P.loc[t,p] = obj_P[p][t]/DAJ[p]
         #np.random.seed(2023)
         #DAP = pd.DataFrame(np.random.normal(loc = 1.0, scale =15,
         #                                    size = (df.shape[0],len(DA_products))),
@@ -123,8 +129,8 @@ for month in orig_df['month'].unique():
         ### Objective Function ###
         ##########################
         print('setting objective function')
-        m.setObjective(gp.quicksum(P[j][i]*charge_amt[i,j] for i in range(t_horizon) for j in products)
-                    + gp.quicksum(P[j][i]*DA_charge_amt[i,j] for i in range(t_horizon) for j in DA_products), 
+        m.setObjective(gp.quicksum(obj_P[j][i]*charge_amt[i,j] for i in range(t_horizon) for j in products)
+                    + gp.quicksum(obj_P[j][i]*DA_charge_amt[i,j] for i in range(t_horizon) for j in DA_products), 
                     GRB.MAXIMIZE)
 
         ##########################
@@ -234,12 +240,12 @@ for month in orig_df['month'].unique():
             for s in products:
                 if product[t,s].X > 0.9:
                     final_product.append(s)
-                    final_price.append(P[s][t])
+                    final_price.append(obj_P[s][t])
                     final_charge_amt.append(cd2[s]*charge_amt[t,s].X)
             for s in DA_products:
                 if DA_product[t,s].X > 0.9:
                     final_product.append(s)
-                    final_price.append(P[s][t])
+                    final_price.append(obj_P[s][t])
                     final_charge_amt.append(cd3[s]*DA_charge_amt[t,s].X)
         
         start_val = SoC[t_horizon-1].X
