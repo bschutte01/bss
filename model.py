@@ -117,6 +117,7 @@ for month in orig_df['month'].unique():
         ##########################
         ### Objective Function ###
         ##########################
+        
         print('setting objective function')
         m.setObjective(gp.quicksum(P[j][i]*product[i,j] for i in range(t_horizon) for j in products)
                     + gp.quicksum(P[j][i]*DA_product[i,j] for i in range(t_horizon) for j in DA_products), 
