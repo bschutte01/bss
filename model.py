@@ -95,8 +95,8 @@ for month in orig_df['month'].unique():
 
         # Model Params #
         m.Params.MIPGap = 0.005
-        m.Params.NodefileStart = 0.10
-        m.params.Threads = 6
+        #m.Params.NodefileStart = 0.10
+        #m.params.Threads = 6
         #todo: pull these parameters from an input file for easier control
         #      create a function to handle these intializations
         
@@ -117,7 +117,7 @@ for month in orig_df['month'].unique():
         ##########################
         ### Objective Function ###
         ##########################
-        
+
         print('setting objective function')
         m.setObjective(gp.quicksum(P[j][i]*product[i,j] for i in range(t_horizon) for j in products)
                     + gp.quicksum(P[j][i]*DA_product[i,j] for i in range(t_horizon) for j in DA_products), 
