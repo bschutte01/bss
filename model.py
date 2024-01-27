@@ -21,8 +21,9 @@ df['hour'] = df['date_time'].dt.hour
 df['month'] = df['date_time'].dt.month
 df['year'] = df['date_time'].dt.year
 df['day'] = df['date_time'].dt.date
+df['day_num'] = df['date_time'].dt.day
 
-df = df[(df['year'] != 2023) & (df['month'] <= 2)]
+#df = df[(df['year'] != 2023) & (df['month'] <= 8)]
 print('sorting by date')
 df= df.sort_values(by = 'date_time', ignore_index= True)
 df = df.fillna(0)
@@ -37,7 +38,7 @@ start_val = .25
 #mtype = 'hourly'
 for month in orig_df['month'].unique():
     try:
-        t_delta = 30 #length of a timechunk in minutes
+        t_delta = 60 #length of a timechunk in minutes
         #the data is given in 5 min intervals, t_delta = 5 is the base for real time analysis
         print('Model initialized for month ', month)
         df = orig_df[orig_df['month']==month]
@@ -47,7 +48,6 @@ for month in orig_df['month'].unique():
         df['t_group'] = df.groupby(['day',
                                     pd.Grouper(key='date_time',freq= str(t_delta)+'min')]).ngroup()
         
-        print(df.head(20))
 
         products = ['i','c','d','spinr','suppr','regu','regd']
         DA_products = ['DAi','DAc','DAd','DAspinr','DAsuppr','DAregu','DAregd']
@@ -84,7 +84,7 @@ for month in orig_df['month'].unique():
         print('initializing charge at ', init_SOC)
         cd = {products[i]:[0,1*rt_eff,-1,-1,-1,-1,1*rt_eff][i] for i in range(len(products))}    #control if product is charge or discharge
         TP_eff = {products[i]:[0,1,1,0.1,0.1,0.2,0.2][i] for i in range(len(products))}    #TP efficiency for each product
-        J = {s:TP_eff[s]*cd[s]*(t_delta/duration) for s in products}
+        J = {s:TP_eff[s]*cd[s]*(5/duration) for s in products}
         DAJ = {f'DA{k}': v for k,v in J.items()} #amount of energy added/removed for each product
 
         #is 20% TP accurate for ancillary market rates? how sensitive is market participation to this TP?
@@ -92,12 +92,17 @@ for month in orig_df['month'].unique():
 
         # Prices #
         P = df
+        for prod in products:
+            P[prod] = P.groupby('t_group')[prod].transform('mean')
+        print(df.head(20))
 
         # Model Params #
         m.Params.MIPGap = 0.01
+        m.Params.MIPFocus = 3
         #m.Params.NodefileStart = 0.10
-        #m.params.Threads = 6
-
+        #m.params.Threads = 31
+        m.params.Cuts = 3
+        m.params.Presolve = 2
         
         ##########################
         ### Decision Variables ###
@@ -111,7 +116,7 @@ for month in orig_df['month'].unique():
 
         #these are auxillary terms used when grouping chunks of time >5 min for analysis
         t_aux = m.addVars(t_groups,products, vtype=GRB.BINARY,name = 't_aux')
-        DA_t_aux = m.addVars(t_groups,DA_products, vtype=GRB.BINARY,name = 'DA_t_aux')
+        #DA_t_aux = m.addVars(t_groups,DA_products, vtype=GRB.BINARY,name = 'DA_t_aux')
 
         SoC = m.addVars(t_horizon, vtype = GRB.CONTINUOUS, name = 'SoC',
                         lb = soc_min,
@@ -221,14 +226,14 @@ for month in orig_df['month'].unique():
                     m.addConstr(expr == len(temp)*t_aux[t_group,k],
                                 name = 'time_interval_logic_group_'+ k + str(t_group))
                     
-            print('...creating auxilary contraints for DA time interval')
-            for k in DA_products[1:]:
-                for t_group in df.t_group.unique():
-                    temp = df.index[df['t_group'] == t_group]
-                    expr = gp.LinExpr()
-                    expr.add(gp.quicksum(DA_product[t,k]+ DA_product[t,'DAi'] for t in temp))
-                    m.addConstr(expr == len(temp)*DA_t_aux[t_group,k],
-                                name = 'DA_time_interval_logic_group_' + k + str(t_group))
+            #print('...creating auxilary contraints for DA time interval')
+            #for k in DA_products[1:]:
+            #    for t_group in df.t_group.unique():
+            #        temp = df.index[df['t_group'] == t_group]
+            #        expr = gp.LinExpr()
+            #        expr.add(gp.quicksum(DA_product[t,k]+ DA_product[t,'DAi'] for t in temp))
+            #        m.addConstr(expr == len(temp)*DA_t_aux[t_group,k],
+            #                    name = 'DA_time_interval_logic_group_' + k + str(t_group))
 
                     
         
