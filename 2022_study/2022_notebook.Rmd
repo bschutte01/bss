@@ -1,0 +1,550 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r, echo = FALSE, message=FALSE}
+library(tidyverse)
+library(readxl)
+library(ggridges)
+library(reshape2)
+library(RColorBrewer)
+library(scales)
+
+options(dplyr.summarise.inform = FALSE)
+```
+
+```{r, warning=FALSE}
+year = 2022
+five_out_file_loc <- dir(paste0('C:\\Users\\brend\\Documents\\dev\\bss\\',year,'_study\\output\\fivemin'),
+                    full.names = TRUE)
+hour_out_file_loc <- dir(paste0('C:\\Users\\brend\\Documents\\dev\\bss\\',year,'_study\\output\\hourly'),
+                    full.names = TRUE)
+five_out_df <- do.call(rbind,lapply(five_out_file_loc,read.csv))
+hour_out_df <- do.call(rbind,lapply(hour_out_file_loc,read.csv))
+
+price_df <- read_excel('C:\\Users\\brend\\Documents\\dev\\bss\\2021_nodal_input.xlsx')
+```
+
+```{r}
+getSeason <- function(DATES) {
+    WS1 <- as.Date("2021-12-21", format = "%Y-%m-%d") # Winter Solstice 2021
+    WS2 <- as.Date("2022-12-21", format = "%Y-%m-%d") # Winter Solstice 2022
+    
+    SE1 <- as.Date("2021-3-20",  format = "%Y-%m-%d") # Spring Equinox 2021
+    SE2 <- as.Date("2022-3-20",  format = "%Y-%m-%d") # Spring Equinox 2022
+    
+    SS1 <- as.Date("2021-6-21",  format = "%Y-%m-%d") # Summer Solstice 2021
+    SS2 <- as.Date("2022-6-21",  format = "%Y-%m-%d") # Summer Solstice 2022
+    
+    FE1 <- as.Date("2021-9-23",  format = "%Y-%m-%d") # Fall Equinox 2022
+    FE2 <- as.Date("2022-9-23",  format = "%Y-%m-%d") # Fall Equinox 2022
+
+    # Convert dates from any year to 2012 dates
+    d <- as.Date(strftime(DATES, format="%Y-%m-%d"))
+    yr <- year(DATES)
+    
+    ifelse(yr == 2021,
+    ifelse (d >= WS1 | d < SE1, "Winter",
+      ifelse (d >= SE1 & d < SS1, "Spring",
+        ifelse (d >= SS1 & d < FE1, "Summer", "Fall"))),
+    ifelse (d >= WS2 | d < SE2, "Winter",
+      ifelse (d >= SE2 & d < SS2, "Spring",
+        ifelse (d >= SS2 & d < FE2, "Summer", "Fall")))
+    )
+}
+```
+
+
+
+```{r}
+five_out_df <- five_out_df %>% mutate(interval = '5-Minute')
+hour_out_df <- hour_out_df %>% mutate(interval = 'Hourly')
+out_df <- rbind(five_out_df,hour_out_df)
+out_df %>%
+  arrange(interval,date_time) %>%
+  mutate(isDA = if_else(str_detect(product,'DA'), 'DA','not DA'))%>%
+  mutate(date_time = ymd_hms(date_time))%>%
+  mutate(charge_diff = c(0,diff(out_df$SoC, lag = 1)))%>%
+  mutate(seas = getSeason(date_time))-> res_df
+
+price_df %>%
+  melt(id.vars = 'date_time', variable.name = 'product',value.name = 'price')%>%
+  mutate(price = replace_na(price,0))-> price_res
+  
+```
+
+# Pricing
+- Distribution of pricing by month, day, day of week
+```{r, fig.height=20, fig.width=30, message = FALSE, warning = FALSE}
+weird <- scales::trans_new("signed_log",
+       transform=function(x) sign(x)*log1p(abs(x)),
+       inverse=function(x) sign(x)*expm1(abs(x)))
+
+price_res%>%
+  filter(product!= 'i' & product!= 'DAi' & product!= 'c' & product!= 'DAc')%>%
+  mutate(product = fct_reorder(.f = product, .x = price))%>%
+ggplot(aes(x = price, y = product, fill = product))+
+  geom_density_ridges(scale = 2, linwidth = 2)+
+  scale_x_continuous(trans=weird, 
+                     breaks = c(-1000,-100,-10, 0,10,100,1000), limits = c(-1000,1000))+
+  theme_ridges() + theme(legend.position = 'none')+
+  facet_wrap(~month(date_time),ncol = 6)
+```
+```{r}
+price_res%>%
+  filter(product %in% c('d','DAd'), price > 0)%>%
+  mutate(seas = factor(getSeason(date_time), levels = c('Spring','Summer','Fall','Winter')),
+         isDA = if_else(str_detect(product,'DA'), 'DA','RT'))%>%
+  ggplot(aes(x = seas, y = price))+
+  stat_boxplot()+theme_bw()+facet_wrap(~isDA)+
+  scale_y_log10(labels = dollar_format())+
+    labs(title = 'Seasonal spread of positive RT/DALMP prices in the market',
+         x = element_blank(), y = 'Price')-> p
+p
+ggsave(paste0(graph_path,'seasonal_boxes.png'),p)
+```
+```{r}
+price_res%>%
+  filter(product %in% c('d','DAd'), price > 0)%>%
+  mutate(seas = factor(getSeason(date_time), levels = c('Spring','Summer','Fall','Winter')))%>%
+  select(seas, price)->box_plot_price
+vals <- boxplot(price~seas,box_plot_price)
+temp <- data.frame(seas = vals$group,outlier = vals$out)
+
+temp%>%
+  group_by(seas)%>%
+  summarise(seas_out_means = mean(outlier))
+temp%>%
+  mutate(seas = recode(seas, `1`='Spring', `2` = 'Summer', `3`='Fall', `4`='Winter' ))%>%
+ggplot(aes(x = outlier))+
+  geom_histogram(bins = 15)+facet_wrap(~seas)+theme_bw()+
+  labs(title = 'Summer 2022 did not have a lot of high value outliers in price',
+       x = 'Outlier Prices',y = 'Frequency')->p
+  p
+  ggsave(paste0(graph_path,'seasonal_outs.png'),p)
+```
+
+# Revenue
+- Which model earned the most on the battery asset? By Month? By product?
+
+## By Month
+
+```{r}
+graph_path <- 'C:\\Users\\brend\\Documents\\dev\\bss\\2022_study\\graphs\\'
+res_df %>% 
+  group_by(interval,mnth = month(date_time)) %>%
+  summarise(earnings = sum(price))%>%
+   ggplot(aes(x = factor(mnth), y = earnings, fill = interval))+
+   geom_col(position = position_dodge()) +
+  scale_y_continuous(labels = dollar_format())+
+  labs(x = 'Month', y = 'Total Earnings', title = '2022 Total Earnings by Month (DA + RT + ANC)', fill= 'Planning Window') + 
+  #scale_fill_discrete(labels = c('Hourly', '5 Minute'))+
+  theme_bw()-> p
+p
+ggsave(paste0(graph_path,'rev_by_month.png'),p)
+```
+```{r}
+res_df %>% 
+  group_by(mnth = month(date_time),interval) %>%
+  summarise(earnings = sum(price))%>%
+  mutate(lag = lag(earnings))%>%
+  mutate(pct.change = (earnings - lag)/lag,
+         earnings_diff = earnings - lag)%>%
+  filter (!is.na(lag))-> pct_earn
+```
+
+
+## By Month and Product
+```{r}
+my_colors <- brewer.pal(7, 'Paired')
+RT_colors <- c(c = my_colors[1], d = my_colors[2], i = my_colors[7],
+               regd = my_colors[3], regu = my_colors[4], spinr = my_colors[5],suppr = my_colors[6])
+DA_colors <- c(DAc = my_colors[1], DAd = my_colors[2], DAi = my_colors[7],
+               DAregd = my_colors[3], DAregu = my_colors[4], DAspinr = my_colors[5],DAsuppr = my_colors[6])
+
+
+res_df %>% filter(isDA == 'DA')%>%
+  group_by(interval,mnth = factor(month(date_time)),product) %>%
+  summarise(earnings = sum(price))%>%
+   ggplot(aes(x = mnth, y = earnings, fill = product))+
+   geom_col()+facet_wrap(~interval)+ylim(-4e4,3e5)+scale_fill_manual(values = DA_colors)+
+  scale_y_continuous(labels = dollar_format())+
+  labs(x = 'Month', y = 'Earnings', title = '2022 DA Market Breakdown by Month', fill = 'Product') -> p1
+p1
+ggsave(paste0(graph_path,'DA_earn_byprod.png'),p1)
+
+res_df %>% filter(isDA == 'not DA')%>%
+  group_by(interval,mnth = factor(month(date_time)),product) %>%
+  summarise(earnings = sum(price))%>%
+   ggplot(aes(x = mnth, y = earnings, fill = product))+
+   geom_col()+facet_wrap(~interval)+ylim(-4e4,3e5)+ scale_fill_manual(values = RT_colors)+
+  scale_y_continuous(labels = dollar_format())+
+  labs(x = 'Month', y = 'Earnings', title = '2022 RT Market Breakdown by Month', fill = 'Product') -> p2
+p2
+ggsave(paste0(graph_path,'RT_earn_byprod.png'),p2)
+
+res_df %>% mutate(product = str_replace(product,'DA',''))%>%
+  group_by(interval,mnth = factor(month(date_time)),product) %>%
+  summarise(earnings = sum(price))%>%
+   ggplot(aes(x = mnth, y = earnings, fill = product))+
+   geom_col()+facet_wrap(~interval)+scale_fill_manual(values = RT_colors)+
+  scale_y_continuous(labels = dollar_format())+
+  labs(x = 'Month', y = 'Total Earnings', title = '2022 Total Earnings Breakdown by Month', fill = 'Product') -> p3
+p3
+ggsave(paste0(graph_path,'all_earn_byprod.png'),p3)
+```
+# By Weekday
+```{r}
+res_df %>% filter(isDA == 'DA')%>%
+  group_by(interval,weekday = wday(date_time,label = TRUE),product) %>%
+  summarise(earnings = sum(price))%>%
+   ggplot(aes(x = weekday, y = earnings, fill = product))+
+  ylim(-1.2e4,4e5)+scale_fill_manual(values = DA_colors)+
+   geom_col()+facet_wrap(~interval)+
+  scale_y_continuous(labels = dollar_format())+
+  labs(x = NA, y = 'Earnings', title = '2022 DA Market Breakdown by Weekday', fill = 'Product')
+
+res_df %>% filter(isDA == 'not DA')%>%
+  group_by(interval,weekday = wday(date_time,label = TRUE),product) %>%
+  summarise(earnings = sum(price))%>%
+   ggplot(aes(x = weekday, y = earnings, fill = product))+ylim(-1.2e4,4e5)+
+  scale_fill_manual(values = RT_colors)+
+   geom_col()+facet_wrap(~interval)+
+  scale_y_continuous(labels = dollar_format())+
+  labs(x = element_blank(), y = 'Earnings', title = '2022 RT Market Breakdown by Weekday', fill = 'Product')
+
+res_df %>% mutate(product = str_replace(product,'DA',''))%>%
+  group_by(interval,weekday = wday(date_time,label = TRUE),product) %>%
+  summarise(earnings = sum(price))%>%
+   ggplot(aes(x = weekday, y = earnings, fill = product))+scale_fill_manual(values = RT_colors)+
+   geom_col()+facet_wrap(~interval)+
+  scale_y_continuous(labels = dollar_format())+
+  labs(x = element_blank(), y = 'Total Earnings', title = '2022 Total Earnings Breakdown by Weekday', fill = 'Product') -> p
+p
+ggsave(paste0(graph_path,'all_earn_byprodbywkday.png'),p)
+```
+
+### Seasonality
+
+
+```{r}
+res_df%>%
+  mutate(product = str_replace(product,'DA',''),
+         seas = factor(seas, levels = c('Spring','Summer','Fall','Winter')))%>%
+  group_by(interval, product,seas)%>%
+  summarise(earnings = sum(price))%>%
+  ggplot(aes(x = seas, y = earnings, fill = product))+
+  geom_col()+facet_wrap(~interval)+theme_bw()+
+  scale_y_continuous(labels = dollar_format())+
+  labs(title = '2022 Total Earnings Breakdown by Season',
+       x = element_blank(), y = 'Total Earnings')-> p
+
+p
+ggsave(paste0(graph_path,'seasonal_earnings.png'),p)
+```
+
+```{r}
+for (s in unique(res_df$seas)) {
+  
+
+  # res_df %>% filter(isDA == 'DA' & seas == s)%>%
+  #   group_by(interval,weekday = wday(date_time,label = TRUE),product) %>%
+  #   summarise(earnings = sum(price))%>%
+  #    ggplot(aes(x = weekday, y = earnings, fill = product))+
+  #    geom_col()+facet_wrap(~interval)+ labs(title = paste(s,'DA')) -> p1
+  # print(p1)
+  # 
+  # res_df %>% filter(isDA == 'not DA'& seas == s)%>%
+  #   group_by(interval,weekday = wday(date_time,label = TRUE),product) %>%
+  #   summarise(earnings = sum(price))%>%
+  #    ggplot(aes(x = weekday, y = earnings, fill = product))+
+  #    geom_col()+facet_wrap(~interval)+ labs(title = paste(s,'not DA')) -> p2
+  # print(p2)
+  
+  res_df %>% filter(seas == s)%>%
+    mutate(product = str_replace(product,'DA',''))%>%
+    group_by(interval,weekday = wday(date_time,label = TRUE),product) %>%
+    summarise(earnings = sum(price))%>%
+     ggplot(aes(x = weekday, y = earnings, fill = product))+
+    scale_fill_manual(values = RT_colors)+
+     geom_col()+facet_wrap(~interval)+ 
+    scale_y_continuous(labels = dollar_format())+
+    labs(x = element_blank(), y = 'Total Earnings',title = paste(s, 'months Total Earnings'))-> p3
+    print(p3)
+ggsave(paste0(graph_path,s,'all_earn_byprodbywkday.png'),p3)
+}
+```
+# Hourly Breakdown
+
+```{r}
+# res_df%>% filter(isDA == 'DA')%>%
+#   filter(month(date_time)!= 2)%>%
+#     group_by(interval,hr = hour(date_time),product) %>%
+#     summarise(earnings = sum(price))%>%
+#     ggplot(aes(x = factor(hr), y = earnings, fill = product))+
+#   scale_y_continuous(labels = dollar_format())+
+#   scale_fill_manual(values = DA_colors)+
+#      geom_col()+facet_wrap(~interval)+
+#   labs(x = 'Hour of day', y = 'Earnings',title = '2022 DA Earnings by Hour of Day')+theme_bw()+
+#   theme(axis.text.x = element_text(angle = -30, hjust = 1))
+# 
+# res_df%>% filter(isDA == 'not DA')%>%
+#   filter(month(date_time)!= 2)%>%
+#     group_by(interval,hr = hour(date_time),product) %>%
+#     summarise(earnings = sum(price))%>%
+#     ggplot(aes(x = factor(hr), y = earnings, fill = product))+
+#   scale_y_continuous(labels = dollar_format())+
+#   scale_fill_manual(values = RT_colors)+
+#      geom_col()+facet_wrap(~interval)+
+#   labs(x = 'Hour of day', y = 'Earnings',title = '2022 RT Earnings by Hour of Day')+theme_bw()+
+#   theme(axis.text.x = element_text(angle = -30, hjust = 1))
+
+res_df%>%mutate(product = str_replace(product,'DA',''))%>%
+  filter(month(date_time)!= 2)%>%
+    group_by(interval,hr = hour(date_time),product) %>%
+    summarise(earnings = sum(price))%>%
+    ggplot(aes(x = factor(hr), y = earnings, fill = product))+
+  scale_y_continuous(labels = dollar_format())+
+  scale_fill_manual(values = RT_colors)+
+     geom_col()+facet_wrap(~interval)+
+  labs(x = 'Hour of day', y = 'Total Earnings',title = '2022 Total Earnings by Hour of Day')+theme_bw()+
+  theme(axis.text.x = element_text(angle = -30, hjust = 1))
+```
+
+```{r, warning= FALSE}
+for (m in unique(month(res_df$date_time))) {
+#   res_df%>% filter(isDA == 'DA' & month(date_time) == m)%>%
+#     group_by(interval,hr = hour(date_time),product) %>%
+#     summarise(earnings = sum(price))%>%
+#     ggplot(aes(x = factor(hr), y = earnings, fill = product))+
+#      geom_col()+facet_wrap(~interval)+ labs(title = paste('DA month',m)) -> p1
+#   print(p1)
+# 
+# res_df%>% filter(isDA == 'not DA'& month(date_time) == m)%>%
+#     group_by(interval,hr = hour(date_time),product) %>%
+#     summarise(earnings = sum(price))%>%
+#     ggplot(aes(x = factor(hr), y = earnings, fill = product))+
+#      geom_col()+facet_wrap(~interval)+ labs(title = paste('not DA month',m))-> p2
+#   print(p2)
+
+res_df%>%filter(month(date_time) == m)%>%
+  mutate(product = str_replace(product,'DA',''))%>%
+    group_by(interval,hr = hour(date_time),product) %>%
+    summarise(earnings = sum(price))%>%
+    ggplot(aes(x = factor(hr), y = earnings, fill = product))+
+     geom_col()+facet_wrap(~interval)+ labs(title = paste('month',m)) ->p3
+  print(p3)
+}
+```
+
+# DA Market Participation
+- Which products see the most usage across which time intervals?
+- Which interval has the most day ahead participation? Which is making more money in the DA?
+
+
+```{r}
+res_df %>% filter(isDA == 'not DA')%>%
+ggplot(aes(x = fct_infreq(product), fill = interval))+
+  geom_bar()
+
+res_df %>% filter(isDA == 'DA')%>%
+ggplot(aes(x = fct_infreq(product), fill = interval))+
+  geom_bar()
+
+res_df %>% mutate(product = str_replace(product,'DA',''))%>%
+ggplot(aes(x = fct_infreq(product), fill = interval))+
+  geom_bar()+ facet_wrap(~isDA,ncol = 1)
+
+res_df %>% mutate(product = str_replace(product,'DA',''))%>%
+ggplot(aes(x = fct_infreq(product), fill = isDA))+
+  geom_bar()+facet_wrap(~interval)
+```
+switch these to proportions 
+
+
+```{r}
+res_df %>%
+  group_by(interval,isDA)%>%
+  summarise(participation = n(), earnings = sum(price)) -> DA_summary
+
+DA_summary$isDA[DA_summary$isDA == 'not DA'] <- 'RT'
+
+DA_summary%>%
+  group_by(interval)%>%
+  mutate(part_proportion = participation/sum(participation))%>%
+ggplot(aes(x = interval, y = part_proportion, fill = isDA))+
+  geom_col()+
+  scale_y_continuous(labels = scales::percent_format())+ theme_bw()+
+  labs(x = 'Planning Window', y ='Real time vs Day Ahead Market Participation', fill = 'DA vs RT',
+       title = '2022 Proportion of participation in DA and RT Markets') -> p1
+
+ggsave(paste0(graph_path,'DA_participation_prop.png'),p1)
+
+DA_summary%>%
+  group_by(interval)%>%
+  mutate(earn_proportion = earnings/sum(earnings))%>%
+ggplot(aes(x = interval, y = earn_proportion, fill = isDA))+
+  geom_col()+
+  scale_y_continuous(labels = scales::percent_format())+ theme_bw()+
+  labs(x = 'Planning Window', y ='Real time vs Day Ahead Earnings Proportion', fill = 'DA vs RT',
+       title = '2022 Proportion of earnings in DA and RT Markets') -> p2
+
+ggsave(paste0(graph_path,'DA_earnings_prop.png'),p2)
+
+```
+
+Real time spends less time in DA and earns less in DA (and visa versa)
+
+# State of Charge
+
+- Highlight where the models made different decisions
+
+```{r, fig.height = 10, fig.width=15}
+for(m in unique(month(res_df$date_time))){
+res_df %>%
+  filter(month(date_time) == m)%>%
+  mutate(product = str_replace(product,'DA',''))%>%
+  ggplot(aes(x = date_time, y = SoC, color = product))+
+  geom_point(size = 1)+facet_wrap(~interval,ncol = 1)+theme_bw()+
+    scale_y_continuous(labels = scales::percent_format())+
+    labs(title = paste(year,'month',m,'State of Charge Over Time'),
+         x = element_blank(),y = 'SoC')-> p
+  print(p)
+  ggsave(paste0(graph_path,'SoC\\',m,'soc.png'),p)
+}
+```
+```{r}
+start_date <- as.Date('2022-07-10')
+end_date <- as.Date('2022-07-17')
+
+res_df %>%
+  filter(date_time >= start_date, date_time < end_date)%>%
+  mutate(product = str_replace(product,'DA',''))%>%
+  ggplot(aes(x = date_time, y = SoC, color = product))+
+  geom_point(size = 1)+facet_wrap(~interval,ncol = 1)+theme_bw()+
+    scale_y_continuous(labels = scales::percent_format())+
+  scale_x_datetime(date_breaks = '1 day')+
+    labs(title = paste('Reg Down is often profitable closer to midnight'),
+         x = element_blank(),y = 'SoC')-> p
+p
+ggsave(paste0(graph_path,'202207_week_snapshot.png'),p)
+```
+
+```{r, fig.height = 10, fig.width=15}
+for(m in unique(month(res_df$date_time))){
+res_df %>%
+  filter(month(date_time) == m)%>%
+  mutate(product = str_replace(product,'DA',''),
+         isDA = str_replace(isDA,'not DA','RT'))%>%
+  ggplot(aes(x = date_time, y = SoC, color = isDA))+
+  geom_point()+facet_wrap(~interval,ncol = 1)+theme_bw()+
+    scale_y_continuous(labels = scales::percent_format())+
+    labs(title = paste('Charge in the RT, Discharge in the DA'),
+         x = element_blank(),y = 'SoC', color = 'DA or RT') -> p
+  print(p)
+  ggsave(paste0(graph_path,'SoC\\',m,'DA_soc.png'),p)
+}
+```
+```{r}
+cod <- function(v){
+  if(v %in%  c('c','DAc','regd','DAregd')){return(1)}
+  else if (v %in% c('i','DAi')){return(0)}
+  else{return(-1)}
+}
+res_df$cod <- sapply(res_df$product, cod)
+  
+```
+
+```{r}
+res_df%>%filter(cod != 0,interval=='5-Minute')%>%mutate(isDA = str_replace(isDA,'not DA','RT')) -> temp_df1
+res_df%>%filter(cod != 0,interval=='Hourly')%>%mutate(isDA = str_replace(isDA,'not DA','RT')) -> temp_df2
+table(temp_df1$isDA,temp_df1$cod)
+table(temp_df2$isDA,temp_df2$cod)
+```
+# Mileage
+
+```{r}
+res_df%>%
+  group_by(interval,mnth = month(date_time))%>%
+  summarise(tot_mileage = 4*sum(abs(charge_diff)))%>%
+  ggplot(aes(x = factor(mnth), y = tot_mileage, fill = interval))+
+  geom_col(position = position_dodge())+
+  labs(title = '5-minute planning window will increase activity on the battery',
+       x = 'Month', y = 'Hours of activity')+theme_bw() -> p
+ggsave(paste0(graph_path,'mileage_by_month.png'),p,
+       width = 10, height = 7)
+```
+```{r}
+res_df%>%
+  group_by(interval,mnth = month(date_time))%>%
+  summarise(tot_mileage = 4*sum(abs(charge_diff)))%>%view()
+```
+
+
+# RT vs Hourly Differences in schedule
+
+```{r}
+res_df %>% select(date_time,interval,product)%>%
+dcast(date_time ~ interval, value.var = c('product'))%>%
+mutate(diff = (`5-Minute` == Hourly))->df_comp
+#df_comp <- data.table::dcast(res_df,date_time ~ interval,value.var = 'product')
+#df_comp2 <- reshape(res_df, idvar = 'date_time', timevar = 'interval', direction = 'wide')
+```
+
+```{r}
+res_df %>%
+  filter(interval == '5-Minute')%>%
+  inner_join(df_comp)->res_df_rt
+```
+```{r}
+for(m in unique(month(res_df_rt$date_time))){
+res_df_rt %>%
+  filter(month(date_time) == m)%>%
+  ggplot(aes(x = date_time, y = SoC, color = diff))+
+  geom_point()+facet_wrap(~interval,ncol = 1) -> p
+  print(p)
+}
+```
+
+```{r}
+res_df_rt%>%
+  filter(diff == FALSE)%>%
+  group_by(Hourly)%>%
+  summarise(hourly_state_diff = n())%>%
+  ggplot(aes(x = fct_reorder(Hourly,hourly_state_diff), y = hourly_state_diff))+
+  geom_col()
+
+
+res_df_rt%>%
+  filter(diff == FALSE)%>%
+  group_by(`5-Minute`)%>%
+  summarise(realtime_state_diff = n())%>%
+  ggplot(aes(x = fct_reorder(`5-Minute`,realtime_state_diff), y = realtime_state_diff))+
+  geom_col()+labs(title = 'Product switched to in 5-minute window',x = 'Market Product', y = 'Count')+theme_bw()->p1
+p1
+ggsave(paste0(graph_path,'rt_switch_decisions.png'),p1,
+              width = 6, height = 2)
+
+res_df_rt%>%
+  filter(diff == FALSE)%>%
+  group_by(Hourly,`5-Minute`)%>%
+  summarise(f = n())%>%
+  ggplot(aes(x=`5-Minute`,y=Hourly))+
+  geom_tile(aes(fill = f)) + scale_fill_gradient(low = 'light pink', high = 'red')+theme_minimal()+
+  labs(x = 'Product chosen in the 5-minute window instead', y='Product decision in the hourly planning window', title = 'The 5-minute window often prefers the Real Time ancillary services', fill = 'Frequency')->p2
+
+p2
+ggsave(paste0(graph_path,'decision_heatmap.png'),p2)
+```
+
+
+```{r}
+group_by(price_df,date_time)%>%
+  summarise(ct = n())%>%
+  filter(ct >1)
+```
+

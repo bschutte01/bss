@@ -7,7 +7,7 @@ import os
 import datetime
 
 file_loc = os.path.dirname(os.path.realpath(__file__))
-file_name = '2022_nodal_input.xlsx'
+file_name = '2021_nodal_input.xlsx'
 path_to_file = Path(file_loc)/file_name
 
 temp = datetime.datetime.now()
@@ -17,16 +17,28 @@ print('reading data')
 df = pd.read_excel(path_to_file)
 
 print('creating data columns')
-df['hour'] = df['date_time'].dt.hour
-df['month'] = df['date_time'].dt.month
-df['year'] = df['date_time'].dt.year
+df['date_time'] = df['date_time'] - pd.Timedelta(minutes=5) #need to index pricing to the start of the 5 minute interval
 df['day'] = df['date_time'].dt.date
+df['hour'] = df['date_time'].dt.hour
+df['minute'] = df['date_time'].dt.minute
+df['month'] = df['date_time'].dt.month
 df['day_num'] = df['date_time'].dt.day
+df['year'] = df['date_time'].dt.year
+
 
 #df = df[(df['year'] != 2023) & (df['month'] <= 8)]
 print('sorting by date')
 df= df.sort_values(by = 'date_time', ignore_index= True)
 df = df.fillna(0)
+
+
+#df.loc[df.minute == 0,'hour'] = df.loc[df.minute == 0,'hour'] - 1
+#df.loc[df.hour == -1,'hour'] = 23
+#df.loc[(df.minute == 0)&(df.hour == 0),'day'] = df.loc[(df.minute == 0)&(df.hour == 0),'day'] - pd.Timedelta(days = 1)
+#df['hour'] = df['hour'] + 1
+#df.loc[0,'hour'] = 0
+
+
 orig_df = df
 
 final_datetime = []
@@ -34,19 +46,29 @@ final_SOC = []
 final_product = []
 final_price = []
 
-start_val = .25
-#mtype = 'hourly'
-for month in orig_df['month'].unique():
+start_val = 0
+
+
+
+
+#20160 = 2 weeks
+#orig_df = orig_df.loc[(orig_df['month']==11)]
+
+orig_df.to_csv(Path(file_loc)/Path('output\\'+ run_id +'_data.csv'),
+                    index = False)
+print(orig_df.head)
+
+for group in orig_df['month'].unique():
     try:
         t_delta = 60 #length of a timechunk in minutes
-        #the data is given in 5 min intervals, t_delta = 5 is the base for real time analysis
-        print('Model initialized for month ', month)
-        df = orig_df[orig_df['month']==month]
+        #the data is given in 5 min intervals, t_delta = 5 is the baseline analysis
+
+        print('Model initialized for group ', group)
+        df = orig_df.loc[orig_df['month']==group]
         df.reset_index(inplace = True)
 
-        
-        df['t_group'] = df.groupby(['day',
-                                    pd.Grouper(key='date_time',freq= str(t_delta)+'min')]).ngroup()
+
+        df['t_group'] = df.groupby([pd.Grouper(key='date_time',freq= str(t_delta)+'min')]).ngroup()
         
 
         products = ['i','c','d','spinr','suppr','regu','regd']
@@ -60,7 +82,6 @@ for month in orig_df['month'].unique():
         # Time params #
         print('creating parameters')
         
-        #days = 1 #num of days to consider
         t_horizon = max(df.index)+1
         t_groups = max(df['t_group'])+1
 
@@ -70,9 +91,9 @@ for month in orig_df['month'].unique():
 
 
         # Battery params #
-        soc_cap = .95    #max battery charge
-        soc_min = .2    #min batter charge
-        rt_eff = .85    #round trip efficiency, todo: break this down into components based on Nathan's input
+        soc_cap = 1    #max battery charge
+        soc_min = 0    #min batter charge
+        rt_eff = .85    #round trip efficiency, assuming all inefficency captured on charge
         duration = 360    #duration of battery in minutes, inputs will be in 1,2,4,6,8 hours
 
         #products the battery can be in
@@ -80,10 +101,10 @@ for month in orig_df['month'].unique():
         ### supplemental reserve, regulation up, regulation down
 
         # Charging params #
-        init_SOC = start_val      #state of charge prior to running model
+        init_SOC = 0      #state of charge prior to running model
         print('initializing charge at ', init_SOC)
         cd = {products[i]:[0,1*rt_eff,-1,-1,-1,-1,1*rt_eff][i] for i in range(len(products))}    #control if product is charge or discharge
-        TP_eff = {products[i]:[0,1,1,0.1,0.1,0.2,0.2][i] for i in range(len(products))}    #TP efficiency for each product
+        TP_eff = {products[i]:[0,1,1,0.01,0.01,0.2,0.2][i] for i in range(len(products))}    #TP efficiency for each product
         J = {s:TP_eff[s]*cd[s]*(5/duration) for s in products}
         DAJ = {f'DA{k}': v for k,v in J.items()} #amount of energy added/removed for each product
 
@@ -98,12 +119,13 @@ for month in orig_df['month'].unique():
 
         # Model Params #
         m.Params.MIPGap = 0.01
-        m.Params.MIPFocus = 3
-        #m.Params.NodefileStart = 0.10
+        #m.Params.MIPFocus = 3
+        #m.Params.NodefileStart = 0.5
         #m.params.Threads = 31
-        m.params.Cuts = 3
-        m.params.Presolve = 2
-        
+        #m.params.Cuts = 3
+        #m.params.Presolve = 2
+        #m.params.PreSparsify = 1
+
         ##########################
         ### Decision Variables ###
         ##########################
@@ -116,7 +138,7 @@ for month in orig_df['month'].unique():
 
         #these are auxillary terms used when grouping chunks of time >5 min for analysis
         t_aux = m.addVars(t_groups,products, vtype=GRB.BINARY,name = 't_aux')
-        #DA_t_aux = m.addVars(t_groups,DA_products, vtype=GRB.BINARY,name = 'DA_t_aux')
+
 
         SoC = m.addVars(t_horizon, vtype = GRB.CONTINUOUS, name = 'SoC',
                         lb = soc_min,
@@ -243,7 +265,7 @@ for month in orig_df['month'].unique():
         m.optimize()
 
 
-        print('appending results for ',month)
+        print('outputting results for group ',group)
         
         for t in df.index:
             final_datetime.append(df['date_time'][t])
@@ -257,7 +279,17 @@ for month in orig_df['month'].unique():
                     final_product.append(s)
                     final_price.append(P[s][t])
         
-        start_val = SoC[t_horizon-1].X
+        data = {
+            'date_time':final_datetime,
+            'SoC':final_SOC,
+            'product':final_product,
+            'price': final_price
+        }
+
+        final_SOC_df = pd.DataFrame(data)
+        final_SOC_df.to_csv(Path(file_loc)/Path('output\\'+ run_id +'_group'+ str(group) +'_output.csv'),
+                    index = False)
+        #start_val = SoC[t_horizon-1].X
         print('final SoC = ', start_val)
 
     except gp.GurobiError as e:
@@ -280,15 +312,3 @@ for month in orig_df['month'].unique():
 
     #except AttributeError:
     #    print('Encountered an attribute error')
-
-
-data = {
-    'date_time':final_datetime,
-    'SoC':final_SOC,
-    'product':final_product,
-    'price': final_price
-}
-
-final_SOC_df = pd.DataFrame(data)
-final_SOC_df.to_csv(Path(file_loc)/Path('output\\'+ run_id +'_output.csv'),
-                    index = False)
